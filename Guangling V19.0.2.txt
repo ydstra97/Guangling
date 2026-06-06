@@ -1,0 +1,1194 @@
+-- // Guangling Script (V19.0.2 - Undetected Framework Edition) - Matte Blue Edition
+-- Ultimate Patch Log V19.0.2:
+-- [1] Anti-Void Velocity Gate: Raycast hanya aktif saat jatuh ekstrem (Y < -40). CPU super hemat!
+-- [2] Dynamic Velocity Matching (Fly): Hapus Anchored, gunakan Anti-Gravity BodyForce + AssemblyLinearVelocity sync agar undetected Anti-Cheat.
+-- [3] ESP Frustum Culling: Beban CPU dibantai! Abaikan raycast dinding untuk player off-screen & > 200 studs.
+-- [4] Mempertahankan pondasi stabil V19.0.1 (Heartbeat ESP, Memory Leak Fix, dll).
+
+-- ================================
+-- CLEANUP SYSTEM
+-- ================================
+if _G.Guangling and type(_G.Guangling.Cleanup) == "function" then
+    pcall(_G.Guangling.Cleanup)
+end
+
+local CoreGui = game:GetService("CoreGui")
+local PS = game:GetService("PhysicsService")
+
+local G = {
+    connections  = {},
+    flyEnabled   = false,
+    fbEnabled    = false,
+    espEnabled   = false,
+    noclipEnabled= false,
+    antiVoidMode = "Smart", 
+    cleaned      = false,
+    descendantConn = nil,
+    original     = {
+        walkSpeed    = 16,
+        wsWasApplied = false,
+        lastWalkSpeed= nil,
+        lighting     = nil,
+    }
+}
+
+local espCache = {}
+local charPartsCache = {} 
+
+local function conn(c)
+    table.insert(G.connections, c)
+    return c
+end
+
+local StopFly, RestoreLighting, clearESP, stopWSLoop, toggleNoclip
+local psWorks = false
+
+local function Cleanup()
+    if G.cleaned then return end
+    G.cleaned = true
+    pcall(function() if G.flyEnabled and StopFly then StopFly() end end)
+    pcall(function() if G.fbEnabled and RestoreLighting then RestoreLighting() end end)
+    pcall(function() if G.espEnabled and clearESP then clearESP() end end)
+    pcall(function() if G.noclipEnabled and toggleNoclip then toggleNoclip(false) end end)
+    
+    if G.descendantConn then G.descendantConn:Disconnect(); G.descendantConn = nil end
+    
+    if psWorks then
+        pcall(function() PS:UnregisterCollisionGroup("GuanglingPhantom") end)
+    end
+    
+    pcall(function() charPartsCache = {} end)
+    
+    pcall(function()
+        if stopWSLoop then stopWSLoop() end
+        if G.original.wsWasApplied then
+            local lp   = game:GetService("Players").LocalPlayer
+            local char = lp and lp.Character
+            local hum  = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and G.original.walkSpeed then hum.WalkSpeed = G.original.walkSpeed end
+        end
+    end)
+    for _, c in ipairs(G.connections) do pcall(function() c:Disconnect() end) end
+    G.connections = {}
+    local old = CoreGui:FindFirstChild("GuanglingGUI")
+    if old then old:Destroy() end
+    _G.Guangling.Cleanup = nil
+    _G.Guangling.version = nil
+end
+
+if type(_G.Guangling) ~= "table" then _G.Guangling = {} end
+_G.Guangling.Cleanup = Cleanup
+_G.Guangling.version = "V19.0.2 Framework Edition"
+
+-- ================================
+-- SERVICES & PLAYER
+-- ================================
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
+local LocalPlayer      = Players.LocalPlayer
+local Character        = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid         = Character:WaitForChild("Humanoid")
+local RootPart         = Character:WaitForChild("HumanoidRootPart")
+
+G.original.walkSpeed = Humanoid.WalkSpeed
+
+local function getHumanoid() return LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") end
+local function getRootPart() return LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") end
+
+local function refreshCharCache(char)
+    if G.descendantConn then G.descendantConn:Disconnect(); G.descendantConn = nil end
+    charPartsCache = {}
+    if not char then return end
+    
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") then table.insert(charPartsCache, v) end
+    end
+    
+    G.descendantConn = char.DescendantAdded:Connect(function(desc)
+        if desc:IsA("BasePart") then 
+            table.insert(charPartsCache, desc) 
+            if G.noclipEnabled then
+                if psWorks then pcall(function() desc.CollisionGroup = "GuanglingPhantom" end)
+                else desc.CanCollide = false end
+            end
+        end
+    end)
+    conn(G.descendantConn)
+end
+refreshCharCache(Character)
+
+-- ================================
+-- NOCLIP COLLISION GROUP 
+-- ================================
+psWorks = pcall(function()
+    PS:RegisterCollisionGroup("GuanglingPhantom")
+    PS:CollisionGroupSetCollidable("GuanglingPhantom", "Default", false)
+end)
+
+-- ================================
+-- CAPTURE LIGHTING
+-- ================================
+local function CaptureLighting()
+    local data = { 
+        Brightness = Lighting.Brightness, Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient, 
+        FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart, ClockTime = Lighting.ClockTime, 
+        ExposureCompensation = Lighting.ExposureCompensation, GlobalShadows = Lighting.GlobalShadows, effects = {} 
+    }
+    for _, v in ipairs(Lighting:GetChildren()) do 
+        if v:IsA("PostEffect") then data.effects[v] = v.Enabled end 
+    end
+    return data
+end
+
+task.spawn(function()
+    if not LocalPlayer.Character then LocalPlayer.CharacterAdded:Wait() end
+    task.wait(1)
+    if not G.original.lighting then G.original.lighting = CaptureLighting() end
+end)
+
+RestoreLighting = function()
+    local o = G.original.lighting or CaptureLighting()
+    G.original.lighting = o
+    Lighting.Brightness = o.Brightness; Lighting.Ambient = o.Ambient; Lighting.OutdoorAmbient = o.OutdoorAmbient
+    Lighting.FogEnd = o.FogEnd; Lighting.FogStart = o.FogStart; Lighting.ClockTime = o.ClockTime
+    Lighting.ExposureCompensation = o.ExposureCompensation; Lighting.GlobalShadows = o.GlobalShadows
+    for v, state in pairs(o.effects) do pcall(function() v.Enabled = state end) end
+end
+
+local characterChanging = false
+conn(LocalPlayer.CharacterAdded:Connect(function(char)
+    characterChanging = true
+    if G.flyEnabled and StopFly then pcall(StopFly) end
+    Character = char
+    Humanoid  = char:WaitForChild("Humanoid")
+    RootPart  = char:WaitForChild("HumanoidRootPart")
+    G.original.walkSpeed = Humanoid.WalkSpeed
+    refreshCharCache(char) 
+    
+    if G.noclipEnabled and toggleNoclip then toggleNoclip(true) end 
+    
+    if G.original.wsWasApplied and G.original.lastWalkSpeed then
+        task.defer(function()
+            local hum = getHumanoid()
+            if hum and hum.Parent then hum.WalkSpeed = G.original.lastWalkSpeed end
+        end)
+    end
+    characterChanging = false
+end))
+
+-- ================================
+-- GUI CREATION (MATTE BLUE)
+-- ================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name           = "GuanglingGUI"
+ScreenGui.ResetOnSpawn   = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent         = CoreGui
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0, 52, 0, 52)
+ToggleBtn.Position = UDim2.new(0, 14, 0.5, -26)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(15, 20, 28)
+ToggleBtn.Text = ""
+ToggleBtn.ZIndex = 10
+ToggleBtn.Parent = ScreenGui
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 13)
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(80, 170, 255)
+toggleStroke.Thickness = 2
+toggleStroke.Parent = ToggleBtn
+
+local dragonLbl = Instance.new("TextLabel")
+dragonLbl.Size = UDim2.new(1, 0, 1, 0)
+dragonLbl.BackgroundTransparency = 1
+dragonLbl.Text = "🐉"
+dragonLbl.TextColor3 = Color3.fromRGB(80, 170, 255)
+dragonLbl.TextSize = 28
+dragonLbl.Font = Enum.Font.GothamBold
+dragonLbl.ZIndex = 11
+dragonLbl.Parent = ToggleBtn
+
+local GhostBtn = Instance.new("TextButton")
+GhostBtn.Size = UDim2.new(0, 46, 0, 46)
+GhostBtn.Position = UDim2.new(0.5, 30, 0.1, 0)
+GhostBtn.BackgroundColor3 = Color3.fromRGB(30, 40, 55)
+GhostBtn.Text = "👻"
+GhostBtn.TextSize = 24
+GhostBtn.Visible = true
+GhostBtn.ZIndex = 60
+GhostBtn.Parent = ScreenGui
+Instance.new("UICorner", GhostBtn).CornerRadius = UDim.new(1, 0)
+
+local ghostStroke = Instance.new("UIStroke", GhostBtn)
+ghostStroke.Color = Color3.fromRGB(80, 170, 255)
+ghostStroke.Thickness = 2
+
+local ghostDragActive, ghostDragStart, ghostDragOrigin = false, nil, nil
+conn(GhostBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        ghostDragActive = true; ghostDragStart = input.Position; ghostDragOrigin = GhostBtn.Position
+    end
+end))
+conn(GhostBtn.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then ghostDragActive = false end
+end))
+conn(UserInputService.InputChanged:Connect(function(input)
+    if ghostDragActive and ghostDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - ghostDragStart
+        GhostBtn.Position = UDim2.new(ghostDragOrigin.X.Scale, ghostDragOrigin.X.Offset + delta.X, ghostDragOrigin.Y.Scale, ghostDragOrigin.Y.Offset + delta.Y)
+    end
+end))
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 250, 0, 310)
+MainFrame.Position = UDim2.new(0.5, -125, 0.08, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 40, 55)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = true
+MainFrame.ZIndex = 5
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 40)
+TitleBar.BackgroundColor3 = Color3.fromRGB(40, 52, 72)
+TitleBar.BorderSizePixel = 0
+TitleBar.ZIndex = 6
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 14)
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Text = "Guangling v19.0.2"
+TitleLabel.Size = UDim2.new(1, -50, 1, 0)
+TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.TextSize = 14
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.ZIndex = 7
+TitleLabel.Parent = TitleBar
+
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 26, 0, 26)
+MinBtn.Position = UDim2.new(1, -33, 0.5, -13)
+MinBtn.BackgroundColor3 = Color3.fromRGB(55, 75, 100)
+MinBtn.Text = "-"
+MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinBtn.TextSize = 17
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.ZIndex = 20
+MinBtn.Parent = TitleBar
+Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 7)
+
+local dragging, dragStart, startPos
+conn(TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = input.Position; startPos = MainFrame.Position
+    end
+end))
+conn(TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+end))
+
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Size = UDim2.new(1, 0, 1, -44)
+ScrollFrame.Position = UDim2.new(0, 0, 0, 44)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 0
+ScrollFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+ScrollFrame.ZIndex = 6
+ScrollFrame.Parent = MainFrame
+
+local listLayout = Instance.new("UIListLayout", ScrollFrame)
+listLayout.Padding = UDim.new(0, 5)
+listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local uiPad = Instance.new("UIPadding", ScrollFrame)
+uiPad.PaddingTop = UDim.new(0, 6)
+uiPad.PaddingBottom = UDim.new(0, 6)
+
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() 
+    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 12) 
+end)
+
+local rowOrder = 0
+local function CreateRow(height)
+    rowOrder += 1
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(0, 234, 0, height or 42)
+    row.BackgroundColor3 = Color3.fromRGB(45, 60, 85)
+    row.BorderSizePixel = 0
+    row.ZIndex = 6
+    row.LayoutOrder = rowOrder
+    row.Parent = ScrollFrame
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 9)
+    return row
+end
+
+local function CreateLabel(parent, text, yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.Text = text
+    lbl.Size = UDim2.new(0.55, 0, 1, 0)
+    lbl.Position = UDim2.new(0, 10, 0, yPos or 0)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(220, 235, 255)
+    lbl.TextSize = 12
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.ZIndex = 7
+    lbl.Parent = parent
+    return lbl
+end
+
+local function CreateToggleSwitch(parent)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 42, 0, 22)
+    btn.Position = UDim2.new(1, -50, 0.5, -11)
+    btn.BackgroundColor3 = Color3.fromRGB(55, 70, 95)
+    btn.Text = ""
+    btn.ZIndex = 8
+    btn.Parent = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+    
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = UDim2.new(0, 3, 0.5, -8)
+    knob.BackgroundColor3 = Color3.fromRGB(140, 165, 195)
+    knob.ZIndex = 9
+    knob.Parent = btn
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+    
+    return btn, knob
+end
+
+local function SetToggleVisual(btn, knob, state)
+    btn.BackgroundColor3  = state and Color3.fromRGB(80, 170, 255) or Color3.fromRGB(55, 70, 95)
+    knob.Position         = state and UDim2.new(1,-19,0.5,-8) or UDim2.new(0,3,0.5,-8)
+    knob.BackgroundColor3 = state and Color3.fromRGB(255,255,255) or Color3.fromRGB(140, 165, 195)
+end
+
+-- ================================
+-- FEATURE: INFINITY JUMP
+-- ================================
+local ijRow = CreateRow()
+CreateLabel(ijRow, "Infinity Jump")
+local ijSwitch, ijKnob = CreateToggleSwitch(ijRow)
+local ijEnabled = false
+
+conn(ijSwitch.MouseButton1Click:Connect(function()
+    ijEnabled = not ijEnabled
+    SetToggleVisual(ijSwitch, ijKnob, ijEnabled)
+end))
+
+conn(UserInputService.JumpRequest:Connect(function()
+    if not ijEnabled then return end
+    local hum = getHumanoid()
+    if hum and hum.Parent then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end))
+
+-- ================================
+-- FEATURE: V19 EVENT-DRIVEN NOCLIP + ANTI-VOID 
+-- ================================
+local ncRow = CreateRow(65)
+local ncLabel = CreateLabel(ncRow, "Phantom Noclip [N]")
+ncLabel.Size = UDim2.new(0.55, 0, 0, 30)
+local ncSwitch, ncKnob = CreateToggleSwitch(ncRow)
+ncSwitch.Position = UDim2.new(1, -50, 0, 7)
+
+local modeBtn = Instance.new("TextButton")
+modeBtn.Size = UDim2.new(1, -20, 0, 22)
+modeBtn.Position = UDim2.new(0, 10, 0, 35)
+modeBtn.BackgroundColor3 = Color3.fromRGB(35, 45, 65)
+modeBtn.Text = "Anti-Void: Smart"
+modeBtn.TextColor3 = Color3.fromRGB(200, 220, 255)
+modeBtn.TextSize = 11
+modeBtn.Font = Enum.Font.GothamBold
+modeBtn.Parent = ncRow
+Instance.new("UICorner", modeBtn).CornerRadius = UDim.new(0, 6)
+
+conn(modeBtn.MouseButton1Click:Connect(function()
+    if G.antiVoidMode == "Light" then G.antiVoidMode = "Smart"
+    elseif G.antiVoidMode == "Smart" then G.antiVoidMode = "Full"
+    else G.antiVoidMode = "Light" end
+    modeBtn.Text = "Anti-Void: " .. G.antiVoidMode
+end))
+
+toggleNoclip = function(forceState)
+    if forceState ~= nil then G.noclipEnabled = forceState else G.noclipEnabled = not G.noclipEnabled end
+    SetToggleVisual(ncSwitch, ncKnob, G.noclipEnabled)
+    
+    if G.noclipEnabled then
+        ghostStroke.Color = Color3.fromRGB(255, 215, 0) 
+        GhostBtn.Text = "🌟"
+        for _, part in ipairs(charPartsCache) do
+            if part and part.Parent and part:IsA("BasePart") then
+                if psWorks then pcall(function() part.CollisionGroup = "GuanglingPhantom" end)
+                else part.CanCollide = false end
+            end
+        end
+    else
+        ghostStroke.Color = Color3.fromRGB(80, 170, 255) 
+        GhostBtn.Text = "👻"
+        for _, part in ipairs(charPartsCache) do
+            if part and part.Parent and part:IsA("BasePart") then
+                if psWorks then pcall(function() part.CollisionGroup = "Default" end) end
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+conn(ncSwitch.MouseButton1Click:Connect(function() toggleNoclip() end))
+conn(GhostBtn.MouseButton1Click:Connect(function() toggleNoclip() end))
+
+conn(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.N then toggleNoclip() end
+end))
+
+local rayParamsNoclip = RaycastParams.new()
+rayParamsNoclip.FilterType = Enum.RaycastFilterType.Exclude
+
+conn(RunService.Stepped:Connect(function()
+    if not G.noclipEnabled or G.flyEnabled then return end
+    
+    local char = LocalPlayer.Character
+    local hrp = getRootPart()
+    local hum = getHumanoid()
+    if not char or not hrp or not hum or hum.Health <= 0 or hum.Sit then return end
+    
+    -- V19.0.2 FIX: Velocity-Based Gate (Hemat CPU)
+    -- Anti-Void hanya akan menembak raycast jika kecepatan jatuh melebihi -40 studs/sec
+    if hrp.AssemblyLinearVelocity.Y < -40 then
+        rayParamsNoclip.FilterDescendantsInstances = {char}
+        local rayDir
+        if G.antiVoidMode == "Light" then rayDir = Vector3.new(0, -4, 0)
+        elseif G.antiVoidMode == "Smart" then rayDir = (hrp.CFrame.LookVector * 1.5) + Vector3.new(0, -6, 0)
+        elseif G.antiVoidMode == "Full" then rayDir = (hrp.CFrame.LookVector * 3) + Vector3.new(0, -12, 0)
+        end
+        
+        local floorHit = workspace:Raycast(hrp.Position, rayDir, rayParamsNoclip)
+        
+        if floorHit then
+            if hrp.AssemblyLinearVelocity.Y < 0 then hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z) end
+            local hipHeight = hum.HipHeight > 0 and hum.HipHeight or 2
+            local targetY = floorHit.Position.Y + hipHeight + (hrp.Size.Y / 2)
+            local rootY = hrp.Position.Y
+            
+            if rootY < targetY - 0.1 then
+                local targetCF = hrp.CFrame + Vector3.new(0, targetY - rootY, 0)
+                hrp.CFrame = hrp.CFrame:Lerp(targetCF, 0.3)
+            end
+        end
+    end
+end))
+
+-- ================================
+-- FEATURE: WALKSPEED (SLIDER + RESET)
+-- ================================
+local wsRow = CreateRow(60)
+local wsLabel = CreateLabel(wsRow, "WalkSpeed: " .. tostring(G.original.walkSpeed))
+wsLabel.Size = UDim2.new(1, -20, 0, 20)
+wsLabel.Position = UDim2.new(0, 10, 0, 5)
+
+local sliderTrack = Instance.new("Frame")
+sliderTrack.Size = UDim2.new(1, -80, 0, 6)
+sliderTrack.Position = UDim2.new(0, 10, 0, 35)
+sliderTrack.BackgroundColor3 = Color3.fromRGB(25, 35, 50)
+sliderTrack.Parent = wsRow
+Instance.new("UICorner", sliderTrack).CornerRadius = UDim.new(1, 0)
+
+local initPercent = math.clamp((G.original.walkSpeed - 16) / (200 - 16), 0, 1)
+local sliderFill = Instance.new("Frame")
+sliderFill.Size = UDim2.new(initPercent, 0, 1, 0)
+sliderFill.BackgroundColor3 = Color3.fromRGB(80, 170, 255)
+sliderFill.Parent = sliderTrack
+Instance.new("UICorner", sliderFill).CornerRadius = UDim.new(1, 0)
+
+local sliderKnob = Instance.new("TextButton")
+sliderKnob.Size = UDim2.new(0, 14, 0, 14)
+sliderKnob.Position = UDim2.new(0, -7, 0.5, -7)
+sliderKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+sliderKnob.Text = ""
+sliderKnob.Parent = sliderFill
+Instance.new("UICorner", sliderKnob).CornerRadius = UDim.new(1, 0)
+
+local resetWsBtn = Instance.new("TextButton")
+resetWsBtn.Size = UDim2.new(0, 50, 0, 22)
+resetWsBtn.Position = UDim2.new(1, -60, 0, 27)
+resetWsBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+resetWsBtn.Text = "Reset"
+resetWsBtn.TextColor3 = Color3.fromRGB(240, 248, 255)
+resetWsBtn.TextSize = 10
+resetWsBtn.Font = Enum.Font.GothamBold
+resetWsBtn.Parent = wsRow
+Instance.new("UICorner", resetWsBtn).CornerRadius = UDim.new(0, 6)
+
+local wsLoopCon, wsEvtCon, wsCharCon
+local currentWS = G.original.walkSpeed
+
+local function applySpeed(speed)
+    if not G.original.wsWasApplied then return end
+    local hum = getHumanoid()
+    if hum and hum.Parent and hum.Health > 0 then 
+        if hum.WalkSpeed ~= speed then hum.WalkSpeed = speed end 
+    end
+end
+
+local function bindWsHumanoid(hum, speed)
+    if wsEvtCon then pcall(function() wsEvtCon:Disconnect() end) end
+    wsEvtCon = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function() applySpeed(speed) end)
+    conn(wsEvtCon)
+end
+
+stopWSLoop = function()
+    G.original.wsWasApplied = false
+    if wsLoopCon then pcall(function() wsLoopCon:Disconnect() end) wsLoopCon = nil end
+    if wsEvtCon then pcall(function() wsEvtCon:Disconnect() end) wsEvtCon = nil end
+    if wsCharCon then pcall(function() wsCharCon:Disconnect() end) wsCharCon = nil end
+end
+
+local function startWSLoop(speed)
+    stopWSLoop()
+    G.original.wsWasApplied = true
+    G.original.lastWalkSpeed = speed
+    local hum = getHumanoid()
+    if hum then bindWsHumanoid(hum, speed) end
+    wsCharCon = LocalPlayer.CharacterAdded:Connect(function(char)
+        local newHum = char:WaitForChild("Humanoid")
+        bindWsHumanoid(newHum, speed)
+    end)
+    conn(wsCharCon)
+    wsLoopCon = RunService.Heartbeat:Connect(function()
+        if not G.original.wsWasApplied then stopWSLoop() return end
+        applySpeed(speed)
+    end)
+    conn(wsLoopCon)
+end
+
+local isDraggingSlider = false
+local function updateSliderVisual(input)
+    local percent = math.clamp((input.Position.X - sliderTrack.AbsolutePosition.X) / sliderTrack.AbsoluteSize.X, 0, 1)
+    sliderFill.Size = UDim2.new(percent, 0, 1, 0)
+    currentWS = math.floor(16 + (percent * (200 - 16)))
+    wsLabel.Text = "WalkSpeed: " .. currentWS
+    local hum = getHumanoid()
+    if hum then hum.WalkSpeed = currentWS end
+end
+
+conn(sliderKnob.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then isDraggingSlider = true end
+end))
+conn(sliderTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then isDraggingSlider = true; updateSliderVisual(input) end
+end))
+conn(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if isDraggingSlider then isDraggingSlider = false; startWSLoop(currentWS) end
+    end
+end))
+conn(UserInputService.InputChanged:Connect(function(input)
+    if isDraggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then updateSliderVisual(input) end
+end))
+conn(resetWsBtn.MouseButton1Click:Connect(function()
+    stopWSLoop()
+    local hum = getHumanoid()
+    if hum and G.original.walkSpeed then hum.WalkSpeed = G.original.walkSpeed end
+    local resetPercent = math.clamp((G.original.walkSpeed - 16) / (200 - 16), 0, 1)
+    sliderFill.Size = UDim2.new(resetPercent, 0, 1, 0)
+    wsLabel.Text = "WalkSpeed: " .. tostring(G.original.walkSpeed)
+    resetWsBtn.BackgroundColor3 = Color3.fromRGB(220, 90, 90)
+    task.delay(0.5, function() resetWsBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60) end)
+end))
+
+-- ================================
+-- FEATURE: FULL BRIGHT
+-- ================================
+local fbRow = CreateRow()
+CreateLabel(fbRow, "Full Bright")
+local fbSwitch, fbKnob = CreateToggleSwitch(fbRow)
+local fbConnections = {}
+
+local function enforceFullBright()
+    if not G.fbEnabled then return end
+    if Lighting.Brightness ~= 2 then Lighting.Brightness = 2 end
+    if Lighting.Ambient ~= Color3.fromRGB(255, 255, 255) then Lighting.Ambient = Color3.fromRGB(255, 255, 255) end
+    if Lighting.OutdoorAmbient ~= Color3.fromRGB(255, 255, 255) then Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255) end
+    if Lighting.GlobalShadows ~= false then Lighting.GlobalShadows = false end
+    if Lighting.FogEnd ~= 100000 then Lighting.FogEnd = 100000 end
+end
+
+local function hookLighting()
+    local props = {"Ambient", "OutdoorAmbient", "Brightness", "GlobalShadows", "FogEnd"}
+    for _, prop in ipairs(props) do 
+        table.insert(fbConnections, Lighting:GetPropertyChangedSignal(prop):Connect(enforceFullBright)) 
+    end
+end
+
+local function stopFBLoop()
+    for _, c in ipairs(fbConnections) do pcall(function() c:Disconnect() end) end
+    fbConnections = {}
+end
+
+conn(fbSwitch.MouseButton1Click:Connect(function()
+    G.fbEnabled = not G.fbEnabled
+    SetToggleVisual(fbSwitch, fbKnob, G.fbEnabled)
+    if G.fbEnabled then enforceFullBright(); hookLighting() else stopFBLoop(); RestoreLighting() end
+end))
+
+-- ================================
+-- FEATURE: FLY (EAGLE ENGINE V19.0.2)
+-- ================================
+local flyRow = CreateRow()
+CreateLabel(flyRow, "Fly")
+
+local flyOpenBtn = Instance.new("TextButton")
+flyOpenBtn.Size = UDim2.new(0, 68, 0, 26)
+flyOpenBtn.Position = UDim2.new(1, -76, 0.5, -13)
+flyOpenBtn.BackgroundColor3 = Color3.fromRGB(55, 85, 120)
+flyOpenBtn.Text = "Open Fly"
+flyOpenBtn.TextColor3 = Color3.fromRGB(240, 248, 255)
+flyOpenBtn.TextSize = 10
+flyOpenBtn.Font = Enum.Font.GothamBold
+flyOpenBtn.ZIndex = 8
+flyOpenBtn.Parent = flyRow
+Instance.new("UICorner", flyOpenBtn).CornerRadius = UDim.new(0, 6)
+
+local FlyGui = Instance.new("Frame")
+FlyGui.Size = UDim2.new(0, 210, 0, 270)
+FlyGui.Position = UDim2.new(0.5, -105, 0.5, -135)
+FlyGui.BackgroundColor3 = Color3.fromRGB(30, 40, 55)
+FlyGui.BorderSizePixel = 0
+FlyGui.Visible = false
+FlyGui.ZIndex = 50
+FlyGui.Parent = ScreenGui
+Instance.new("UICorner", FlyGui).CornerRadius = UDim.new(0, 10)
+
+local EagleBtn = Instance.new("TextButton")
+EagleBtn.Size = UDim2.new(0, 46, 0, 46)
+EagleBtn.Position = UDim2.new(0.5, -23, 0.1, 0)
+EagleBtn.BackgroundColor3 = Color3.fromRGB(30, 40, 55)
+EagleBtn.Text = "🦅"
+EagleBtn.TextSize = 24
+EagleBtn.Visible = false
+EagleBtn.ZIndex = 60
+EagleBtn.Parent = ScreenGui
+Instance.new("UICorner", EagleBtn).CornerRadius = UDim.new(1, 0)
+
+local eagleStroke = Instance.new("UIStroke", EagleBtn)
+eagleStroke.Color = Color3.fromRGB(80, 170, 255)
+eagleStroke.Thickness = 2
+
+local flyDragActive, flyDragMoved, flyDragStart, flyDragOrigin = false, false, nil, nil
+local eagleDragActive, eagleDragMoved, eagleDragStart, eagleDragOrigin = false, false, nil, nil
+
+local BW, BH = 56, 40
+local function FBtn(txt, x, y, w, bg, tc)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, w or BW, 0, BH)
+    b.Position = UDim2.new(0, x, 0, y)
+    b.BackgroundColor3 = bg or Color3.fromRGB(65,65,65)
+    b.Text = txt
+    b.TextColor3 = tc or Color3.fromRGB(255,255,255)
+    b.TextSize = 12
+    b.Font = Enum.Font.GothamBold
+    b.ZIndex = 51
+    b.Parent = FlyGui
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+    return b
+end
+
+local function FLbl(txt, x, y, w)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0, w or BW, 0, BH)
+    l.Position = UDim2.new(0, x, 0, y)
+    l.BackgroundColor3 = Color3.fromRGB(50,50,50)
+    l.Text = txt
+    l.TextColor3 = Color3.fromRGB(255,255,255)
+    l.TextSize = 11
+    l.Font = Enum.Font.GothamBold
+    l.ZIndex = 51
+    l.Parent = FlyGui
+    Instance.new("UICorner", l).CornerRadius = UDim.new(0, 7)
+    return l
+end
+
+FLbl("fly "..LocalPlayer.Name, 6, 6, 92)
+local flyMinBtn    = FBtn("-",    102, 6, 48, Color3.fromRGB(55, 75, 100))
+local flyXBtn      = FBtn("X",    156, 6, 48, Color3.fromRGB(200,60,60))
+local flyMode      = "Modern"
+local flyModeBtn   = FBtn("Mode: Modern (CFrame Lerp)", 6, 46, 198, Color3.fromRGB(40,120,160), Color3.fromRGB(255,255,255))
+flyModeBtn.TextSize = 11
+
+local flyW = FBtn("W", 77, 88, BW)
+local flyA = FBtn("A", 10, 134, BW)
+local flyS = FBtn("S", 77, 134, BW)
+local flyD = FBtn("D", 144, 134, BW)
+local flyUp = FBtn("UP", 10, 180, BW, Color3.fromRGB(50,90,170))
+local flyDown = FBtn("DOWN", 144, 180, BW, Color3.fromRGB(50,90,170))
+local flyMinusSpd = FBtn("-", 6, 224, 38, Color3.fromRGB(75,75,75))
+local flySpeedLbl = FLbl("1", 48, 224, 38)
+local flyPlusSpd = FBtn("+", 90, 224, 38, Color3.fromRGB(75,75,75))
+local flyToggleBtn = FBtn("fly", 132, 224, 72, Color3.fromRGB(50,150,50))
+
+local flySpeedLevel, FLY_BASE = 1, 50
+local flyCon, flyBV, flyBG          
+local held = {W=false,A=false,S=false,D=false,UP=false,DOWN=false}
+local heldColor = {active=Color3.fromRGB(80, 170, 255), inactive=Color3.fromRGB(65,65,65), inactiveUD=Color3.fromRGB(50,90,170)}
+local heldBtns = {W={btn=flyW,ud=false}, A={btn=flyA,ud=false}, S={btn=flyS,ud=false}, D={btn=flyD,ud=false}, UP={btn=flyUp,ud=true}, DOWN={btn=flyDown,ud=true}}
+
+for key, info in pairs(heldBtns) do
+    conn(info.btn.MouseButton1Click:Connect(function()
+        if flyDragMoved then flyDragMoved = false return end 
+        held[key] = not held[key]
+        info.btn.BackgroundColor3 = held[key] and heldColor.active or (info.ud and heldColor.inactiveUD or heldColor.inactive)
+    end))
+end
+
+local function cleanupFlyEngine()
+    if flyBV then flyBV:Destroy(); flyBV = nil end
+    if flyBG then flyBG:Destroy(); flyBG = nil end
+end
+
+StopFly = function()
+    G.flyEnabled = false
+    flyToggleBtn.BackgroundColor3 = Color3.fromRGB(50,150,50)
+    flyToggleBtn.Text = "fly"
+    
+    for k, info in pairs(heldBtns) do 
+        held[k] = false 
+        info.btn.BackgroundColor3 = info.ud and heldColor.inactiveUD or heldColor.inactive 
+    end
+    
+    cleanupFlyEngine()
+    if flyCon then flyCon:Disconnect(); flyCon = nil end
+    
+    pcall(function() 
+        local hum = getHumanoid() 
+        local rp = getRootPart()
+        
+        -- Mengamankan status dari sisa terbang
+        if rp then 
+            rp.Anchored = false 
+            rp.AssemblyLinearVelocity = Vector3.zero
+        end
+        
+        if hum and hum.Parent and hum.Health > 0 then 
+            hum.PlatformStand = false
+            hum.AutoRotate = true 
+            local currentState = hum:GetState()
+            if currentState ~= Enum.HumanoidStateType.Dead and currentState ~= Enum.HumanoidStateType.Seated then 
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp) 
+            end
+        end 
+    end)
+end
+
+local function StartFly()
+    local rp, hum = getRootPart(), getHumanoid()
+    if not rp or not hum or characterChanging then return end
+    G.flyEnabled = true
+    flyToggleBtn.BackgroundColor3 = Color3.fromRGB(200,60,60)
+    flyToggleBtn.Text = "stop"
+    
+    cleanupFlyEngine()
+
+    if flyMode == "Modern" then
+        hum.PlatformStand = true 
+        rp.Anchored = false -- V19.0.2 FIX: JANGAN ANCHORED (Hindari Anticheat Flag)
+        hum.AutoRotate = false
+        
+        -- V19.0.2 FIX: Inject BodyForce penangkal gravitasi untuk Bypass Anticheat
+        flyBV = Instance.new("BodyForce")
+        flyBV.Name = "ModernAntiGravity"
+        flyBV.Force = Vector3.new(0, workspace.Gravity * rp.AssemblyMass, 0)
+        flyBV.Parent = rp
+    else
+        hum.PlatformStand = false
+        rp.Anchored = false
+        hum.AutoRotate = false
+        flyBV = Instance.new("BodyVelocity")
+        flyBV.Name = "MoverVel"
+        flyBV.Velocity = Vector3.zero
+        flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        flyBV.Parent = rp
+        
+        flyBG = Instance.new("BodyGyro")
+        flyBG.Name = "MoverGyro"
+        flyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+        flyBG.D = 50
+        flyBG.Parent = rp
+        
+        task.spawn(function()
+            while G.flyEnabled and flyMode == "Legacy" and flyBV and flyBG do
+                task.wait(5)
+                if flyBV then flyBV.Name = "MoverVel_" .. tostring(math.random(1000, 9999)) end
+                if flyBG then flyBG.Name = "MoverGyro_" .. tostring(math.random(1000, 9999)) end
+            end
+        end)
+    end
+
+    flyCon = RunService.RenderStepped:Connect(function(dt)
+        if not G.flyEnabled or characterChanging then return end
+        local currentRP = getRootPart()
+        local currentHum = getHumanoid()
+        if not currentRP or not currentRP.Parent or not currentHum then StopFly(); return end
+        
+        local cam = workspace.CurrentCamera
+        local spd = FLY_BASE * flySpeedLevel
+        local dir = Vector3.zero
+        
+        if held.W then dir += cam.CFrame.LookVector end
+        if held.S then dir -= cam.CFrame.LookVector end
+        if held.D then dir += cam.CFrame.RightVector end
+        if held.A then dir -= cam.CFrame.RightVector end
+        if held.UP then dir += Vector3.new(0,1,0) end
+        if held.DOWN then dir -= Vector3.new(0,1,0) end
+        
+        local targetVel = dir.Magnitude > 0 and dir.Unit * spd or Vector3.zero
+
+        if flyMode == "Modern" then
+            currentHum.PlatformStand = true
+            currentRP.Anchored = false
+            
+            -- V19.0.2 FIX: Dynamic Velocity Matching (Server melihatmu bergerak legal)
+            currentRP.AssemblyLinearVelocity = targetVel
+            
+            if targetVel.Magnitude > 0 then
+                local offset = targetVel * dt
+                local targetCF = CFrame.new(currentRP.Position + offset, currentRP.Position + offset + cam.CFrame.LookVector)
+                currentRP.CFrame = currentRP.CFrame:Lerp(targetCF, 0.4)
+            else
+                local targetCF = CFrame.new(currentRP.Position, currentRP.Position + cam.CFrame.LookVector)
+                currentRP.CFrame = currentRP.CFrame:Lerp(targetCF, 0.4)
+            end
+        else
+            if flyBV and flyBV.Parent then 
+                flyBV.Velocity = targetVel + Vector3.new(0, (not held.UP and not held.DOWN) and 0.5 or 0, 0) 
+            end
+            if flyBG and flyBG.Parent then flyBG.CFrame = cam.CFrame end
+        end
+    end)
+    conn(flyCon)
+end
+
+conn(flyModeBtn.MouseButton1Click:Connect(function()
+    if flyDragMoved then flyDragMoved = false return end 
+    flyMode = (flyMode == "Modern") and "Legacy" or "Modern"
+    flyModeBtn.Text = flyMode == "Modern" and "Mode: Modern (CFrame Lerp)" or "Mode: Legacy (Stealth)"
+    flyModeBtn.BackgroundColor3 = flyMode == "Modern" and Color3.fromRGB(40,120,160) or Color3.fromRGB(160,80,40)
+    if G.flyEnabled then StopFly(); StartFly() end
+end))
+
+conn(flyToggleBtn.MouseButton1Click:Connect(function() 
+    if flyDragMoved then flyDragMoved = false return end
+    if G.flyEnabled then StopFly() else StartFly() end 
+end))
+
+conn(flyMinusSpd.MouseButton1Click:Connect(function() 
+    if flyDragMoved then flyDragMoved = false return end
+    flySpeedLevel = math.max(flySpeedLevel-1,1); flySpeedLbl.Text = tostring(flySpeedLevel) 
+end))
+
+conn(flyPlusSpd.MouseButton1Click:Connect(function() 
+    if flyDragMoved then flyDragMoved = false return end
+    flySpeedLevel = math.min(flySpeedLevel+1,20); flySpeedLbl.Text = tostring(flySpeedLevel) 
+end))
+
+conn(flyMinBtn.MouseButton1Click:Connect(function() 
+    if flyDragMoved then flyDragMoved = false return end
+    FlyGui.Visible = false; EagleBtn.Visible = true 
+end))
+
+conn(EagleBtn.MouseButton1Click:Connect(function() 
+    if eagleDragMoved then eagleDragMoved = false return end
+    EagleBtn.Visible = false; FlyGui.Visible = true 
+end))
+
+conn(flyXBtn.MouseButton1Click:Connect(function() 
+    if flyDragMoved then flyDragMoved = false return end
+    StopFly(); FlyGui.Visible = false; flyOpenBtn.Text = "Open Fly"; flyOpenBtn.BackgroundColor3 = Color3.fromRGB(55,85,120) 
+end))
+
+conn(flyOpenBtn.MouseButton1Click:Connect(function()
+    if FlyGui.Visible or EagleBtn.Visible then 
+        FlyGui.Visible = false; EagleBtn.Visible = false; flyOpenBtn.Text = "Open Fly"; flyOpenBtn.BackgroundColor3 = Color3.fromRGB(55,85,120)
+    else 
+        FlyGui.Visible = true; flyOpenBtn.Text = "Close Fly"; flyOpenBtn.BackgroundColor3 = Color3.fromRGB(220,90,90) 
+    end
+end))
+
+conn(FlyGui.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        flyDragActive = true
+        flyDragMoved = false
+        flyDragStart = input.Position
+        flyDragOrigin = FlyGui.Position
+    end
+end))
+conn(FlyGui.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then 
+        flyDragActive = false 
+        task.delay(0.05, function() flyDragMoved = false end)
+    end
+end))
+conn(UserInputService.InputChanged:Connect(function(input)
+    if flyDragActive and flyDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - flyDragStart
+        if delta.Magnitude > 5 then flyDragMoved = true end
+        FlyGui.Position = UDim2.new(flyDragOrigin.X.Scale, flyDragOrigin.X.Offset + delta.X, flyDragOrigin.Y.Scale, flyDragOrigin.Y.Offset + delta.Y)
+    end
+    if dragging and dragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end))
+
+conn(EagleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        eagleDragActive = true
+        eagleDragMoved = false
+        eagleDragStart = input.Position
+        eagleDragOrigin = EagleBtn.Position
+    end
+end))
+conn(EagleBtn.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then 
+        eagleDragActive = false 
+        task.delay(0.05, function() eagleDragMoved = false end)
+    end
+end))
+conn(UserInputService.InputChanged:Connect(function(input)
+    if eagleDragActive and eagleDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - eagleDragStart
+        if delta.Magnitude > 5 then eagleDragMoved = true end
+        EagleBtn.Position = UDim2.new(eagleDragOrigin.X.Scale, eagleDragOrigin.X.Offset + delta.X, eagleDragOrigin.Y.Scale, eagleDragOrigin.Y.Offset + delta.Y)
+    end
+end))
+
+-- ================================
+-- FEATURE: GHOST ESP (V19.0.2 CULLING ENGINE)
+-- ================================
+local espRow = CreateRow()
+CreateLabel(espRow, "ESP Highlight")
+local espSwitch, espKnob = CreateToggleSwitch(espRow)
+
+local ESP_COLOR    = Color3.fromRGB(255, 215, 0)
+local MAX_DISTANCE = 500
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function removeESPForPlayer(player)
+    local data = espCache[player]
+    if not data then return end
+    if data.playerConns then for _, c in ipairs(data.playerConns) do pcall(function() c:Disconnect() end) end end
+    pcall(function() if data.highlight and data.highlight.Parent then data.highlight:Destroy() end end)
+    pcall(function() if data.selBox and data.selBox.Parent then data.selBox:Destroy() end end)
+    pcall(function() if data.label and data.label.Parent then data.label:Destroy() end end)
+    espCache[player] = nil
+end
+
+clearESP = function() for player in pairs(espCache) do removeESPForPlayer(player) end end
+
+local function isVisible(hrp)
+    local rp = getRootPart()
+    if not rp or not rp.Parent or not hrp or not hrp.Parent then return false end
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, hrp.Parent}
+    return workspace:Raycast(rp.Position, hrp.Position - rp.Position, rayParams) == nil
+end
+
+local function getDepthMode(priority) return priority >= 3 and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded end
+
+local function createESPForPlayer(player)
+    if player == LocalPlayer or not player.Parent then return end
+    if espCache[player] then removeESPForPlayer(player) end
+
+    local playerConns = {}
+    local data = { highlight = nil, selBox = nil, label = nil, txt = nil, hrp = nil, lastRaycast = 0, lastTextUpdate = 0, isVisible = true, playerConns = playerConns, isAttaching = true }
+    espCache[player] = data
+
+    local function attach(char)
+        if not G.espEnabled then data.isAttaching = false return end
+        if not char or char.Parent ~= workspace then data.isAttaching = false return end
+        
+        local hrp = char:WaitForChild("HumanoidRootPart", 3)
+        if not hrp then data.isAttaching = false return end
+
+        if data.highlight then data.highlight:Destroy() end
+        if data.selBox then data.selBox:Destroy() end
+        if data.label then data.label:Destroy() end
+
+        local highlight = Instance.new("Highlight")
+        highlight.FillColor = ESP_COLOR
+        highlight.OutlineColor = ESP_COLOR
+        highlight.FillTransparency = 0.8
+        highlight.OutlineTransparency = 0
+        highlight.Adornee = char
+        highlight.Parent = char
+
+        local selBox = Instance.new("SelectionBox")
+        selBox.Color3 = ESP_COLOR
+        selBox.LineThickness = 0.05
+        selBox.SurfaceTransparency = 1
+        selBox.Adornee = char
+        selBox.Parent = CoreGui 
+
+        local bill = Instance.new("BillboardGui")
+        bill.Size = UDim2.new(0, 150, 0, 40)
+        bill.StudsOffset = Vector3.new(0, 3, 0)
+        bill.AlwaysOnTop = true
+        bill.Adornee = hrp
+        bill.Parent = CoreGui 
+
+        local txt = Instance.new("TextLabel")
+        txt.Size = UDim2.new(1, 0, 1, 0)
+        txt.BackgroundTransparency = 1
+        txt.Text = player.Name
+        txt.TextColor3 = ESP_COLOR
+        txt.TextStrokeTransparency = 0.2
+        txt.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        txt.Font = Enum.Font.GothamBold
+        txt.TextSize = 11
+        txt.RichText = true
+        txt.Parent = bill
+
+        data.highlight = highlight
+        data.selBox = selBox
+        data.label = bill
+        data.txt = txt
+        data.hrp = hrp
+        data.isAttaching = false
+    end
+
+    if player.Character then task.defer(function() attach(player.Character) end) end
+    table.insert(playerConns, player.CharacterAdded:Connect(attach))
+end
+
+local lastUpdate = 0
+local espValidateTimer = 0
+
+conn(RunService.Heartbeat:Connect(function(dt)
+    if not G.espEnabled then return end
+    local nowTime = tick()
+    if nowTime - lastUpdate < 0.12 then return end
+    lastUpdate = nowTime
+    
+    if nowTime - espValidateTimer > 2 then
+        espValidateTimer = nowTime
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local data = espCache[p]
+                    if (not data or not data.highlight or not data.highlight.Parent or data.hrp ~= hrp) and (not data or not data.isAttaching) then
+                        createESPForPlayer(p)
+                    end
+                end
+            end
+        end
+    end
+
+    local rp = getRootPart()
+    if not rp or not rp.Parent then return end
+
+    for player, data in pairs(espCache) do
+        if not player.Parent or not player.Character then removeESPForPlayer(player); continue end
+        if data.isAttaching then continue end
+        
+        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and hrp.Parent and data.highlight then
+            local dist = (hrp.Position - rp.Position).Magnitude
+            if dist <= MAX_DISTANCE then
+                
+                -- V19.0.2 FIX: Frustum Culling & Proximity Throttling
+                local cam = workspace.CurrentCamera
+                local _, onScreen = cam:WorldToViewportPoint(hrp.Position)
+                
+                if onScreen and dist <= 200 then
+                    if nowTime - data.lastRaycast > 0.25 then 
+                        data.isVisible = isVisible(hrp)
+                        data.lastRaycast = nowTime 
+                    end
+                else
+                    -- Jangan habiskan CPU untuk mengecek dinding pada pemain di belakang kamera / terlalu jauh!
+                    data.isVisible = false 
+                end
+                
+                local head = player.Character:FindFirstChild("Head")
+                local isHidden = (head and head.Transparency > 0.5) or false
+                
+                if isHidden then
+                    data.highlight.Enabled = false
+                    if data.selBox then data.selBox.Visible = true end
+                else
+                    data.highlight.DepthMode = getDepthMode((not data.isVisible and 4) or (dist < 50 and 2) or 1)
+                    data.highlight.Enabled = true
+                    if data.selBox then data.selBox.Visible = false end
+                end
+
+                if data.label and data.txt then
+                    data.label.Enabled = true
+                    if nowTime - data.lastTextUpdate > 0.5 then
+                        data.lastTextUpdate = nowTime
+                        local hum = player.Character:FindFirstChildOfClass("Humanoid")
+                        local hp = hum and math.floor(hum.Health) or 0
+                        local maxHp = hum and math.floor(hum.MaxHealth) or 100
+                        local hpColor = (hp / maxHp > 0.5) and "<font color='rgb(50,255,50)'>" or "<font color='rgb(255,50,50)'>"
+                        data.txt.Text = string.format("%s\n<font color='rgb(200,200,200)'>[%d m]</font> | %sHP: %d</font>", player.Name, math.floor(dist), hpColor, hp)
+                    end
+                end
+            else
+                data.highlight.Enabled = false
+                if data.selBox then data.selBox.Visible = false end
+                if data.label then data.label.Enabled = false end
+            end
+        end
+    end
+end))
+
+conn(espSwitch.MouseButton1Click:Connect(function()
+    G.espEnabled = not G.espEnabled
+    SetToggleVisual(espSwitch, espKnob, G.espEnabled)
+    if G.espEnabled then for _, p in ipairs(Players:GetPlayers()) do createESPForPlayer(p) end else clearESP() end
+end))
+conn(Players.PlayerAdded:Connect(function(p) if G.espEnabled then createESPForPlayer(p) end end))
+conn(Players.PlayerRemoving:Connect(removeESPForPlayer))
+
+-- ================================
+-- SHOW / HIDE ROOT UI
+-- ================================
+local toggleDragActive, toggleDragStart, toggleDragOrigin = false, nil, nil
+local toggleMoved = false
+
+conn(ToggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        toggleDragActive = true
+        toggleMoved = false
+        toggleDragStart = input.Position
+        toggleDragOrigin = ToggleBtn.Position
+    end
+end))
+conn(ToggleBtn.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then 
+        toggleDragActive = false 
+    end
+end))
+conn(UserInputService.InputChanged:Connect(function(input)
+    if toggleDragActive and toggleDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - toggleDragStart
+        if delta.Magnitude > 5 then toggleMoved = true end
+        ToggleBtn.Position = UDim2.new(toggleDragOrigin.X.Scale, toggleDragOrigin.X.Offset + delta.X, toggleDragOrigin.Y.Scale, toggleDragOrigin.Y.Offset + delta.Y)
+    end
+end))
+
+conn(ToggleBtn.MouseButton1Click:Connect(function() 
+    if toggleMoved then toggleMoved = false return end
+    MainFrame.Visible = not MainFrame.Visible 
+end))
+conn(MinBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end))
