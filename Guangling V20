@@ -1,0 +1,616 @@
+-- // GUANGLING V20.0.0 (MODULAR SDK FRAMEWORK) - Matte Blue Edition
+-- // Architect: Gemini & The AI Syndicate (Claude, Kimi, Grok)
+-- // Paradigm: Event-Driven, Lazy-Loaded, Object-Oriented Modules.
+
+-- ==========================================
+-- 1. CORE ENGINE & FRAMEWORK SETUP
+-- ==========================================
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local PS = game:GetService("PhysicsService")
+local UIS = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+
+if _G.GuanglingV20 and type(_G.GuanglingV20.Cleanup) == "function" then
+    pcall(_G.GuanglingV20.Cleanup)
+end
+
+-- Singleton Framework Object
+local Guangling = {
+    Version = "V20.0.0 Modular Framework",
+    Modules = {},
+    Connections = {},
+    Cache = {
+        Players = {},
+        Parts = setmetatable({}, {__mode = "v"}) -- Weak table (Anti Memory Leak)
+    },
+    Config = {
+        FlyMode = "Modern",
+        AntiVoidMode = "Smart",
+        WalkSpeed = 16,
+        ESP_Color = Color3.fromRGB(255, 215, 0)
+    }
+}
+_G.GuanglingV20 = Guangling
+
+-- Core Functions
+function Guangling:Conn(c)
+    table.insert(self.Connections, c)
+    return c
+end
+
+function Guangling:RegisterModule(name, moduleTable)
+    moduleTable.Name = name
+    moduleTable.Enabled = false
+    moduleTable.Connections = {}
+    self.Modules[name] = moduleTable
+    if moduleTable.OnInit then moduleTable:OnInit() end
+end
+
+function Guangling:ToggleModule(name, state)
+    local mod = self.Modules[name]
+    if not mod then return end
+    if state ~= nil then mod.Enabled = state else mod.Enabled = not mod.Enabled end
+    
+    if mod.Enabled and mod.OnEnable then 
+        mod:OnEnable() 
+    elseif not mod.Enabled and mod.OnDisable then 
+        mod:OnDisable() 
+    end
+end
+
+function Guangling.Cleanup()
+    for _, mod in pairs(Guangling.Modules) do
+        if mod.Enabled and mod.OnDisable then pcall(function() mod:OnDisable() end) end
+        for _, c in ipairs(mod.Connections) do pcall(function() c:Disconnect() end) end
+    end
+    for _, c in ipairs(Guangling.Connections) do pcall(function() c:Disconnect() end) end
+    local gui = CoreGui:FindFirstChild("GuanglingGUI_V20")
+    if gui then gui:Destroy() end
+    pcall(function() PS:UnregisterCollisionGroup("GuanglingPhantom") end)
+end
+
+-- ==========================================
+-- 2. [MODULE] CACHE & UTILITIES
+-- ==========================================
+Guangling:RegisterModule("CoreUtilities", {
+    OnInit = function(self)
+        self.psWorks = pcall(function()
+            PS:RegisterCollisionGroup("GuanglingPhantom")
+            PS:CollisionGroupSetCollidable("GuanglingPhantom", "Default", false)
+        end)
+        
+        self.RefreshCache = function(char)
+            if self.DescendantConn then self.DescendantConn:Disconnect() end
+            Guangling.Cache.Parts = setmetatable({}, {__mode = "v"})
+            if not char then return end
+            
+            for _, v in ipairs(char:GetDescendants()) do
+                if v:IsA("BasePart") then table.insert(Guangling.Cache.Parts, v) end
+            end
+            
+            self.DescendantConn = char.DescendantAdded:Connect(function(desc)
+                if desc:IsA("BasePart") then 
+                    table.insert(Guangling.Cache.Parts, desc) 
+                    local ncMod = Guangling.Modules["Noclip"]
+                    if ncMod and ncMod.Enabled then
+                        if self.psWorks then pcall(function() desc.CollisionGroup = "GuanglingPhantom" end)
+                        else desc.CanCollide = false end
+                    end
+                end
+            end)
+        end
+        
+        Guangling:Conn(LocalPlayer.CharacterAdded:Connect(function(char)
+            self.RefreshCache(char)
+            local wsMod = Guangling.Modules["PlayerState"]
+            if wsMod and wsMod.Enabled then
+                task.delay(0.1, function()
+                    local hum = char:WaitForChild("Humanoid", 5)
+                    if hum then hum.WalkSpeed = Guangling.Config.WalkSpeed end
+                end)
+            end
+            local ncMod = Guangling.Modules["Noclip"]
+            if ncMod and ncMod.Enabled then task.delay(0.1, function() ncMod:OnEnable() end) end
+        end))
+        
+        if LocalPlayer.Character then self.RefreshCache(LocalPlayer.Character) end
+    end
+})
+
+-- ==========================================
+-- 3. [MODULE] STEALTH ANTI-AFK
+-- ==========================================
+Guangling:RegisterModule("AntiAFK", {
+    OnInit = function(self)
+        Guangling:Conn(LocalPlayer.Idled:Connect(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end))
+    end
+})
+
+-- ==========================================
+-- 4. [MODULE] NOCLIP & ANTI-VOID
+-- ==========================================
+Guangling:RegisterModule("Noclip", {
+    OnEnable = function(self)
+        local util = Guangling.Modules["CoreUtilities"]
+        local char = LocalPlayer.Character
+        for _, part in pairs(Guangling.Cache.Parts) do
+            if part and part.Parent and char and part:IsDescendantOf(char) and part:IsA("BasePart") then
+                if util.psWorks then pcall(function() part.CollisionGroup = "GuanglingPhantom" end)
+                else part.CanCollide = false end
+            end
+        end
+        
+        self.Connections.Loop = RunService.Stepped:Connect(function()
+            local flyMod = Guangling.Modules["Fly"]
+            if flyMod and flyMod.Enabled then return end
+            -- Guard Anti-Void Cooldown (0.6s)
+            if flyMod and tick() - flyMod.LastStopTime < 0.6 then return end 
+            
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not hrp or not hum or hum.Health <= 0 then return end
+            
+            -- Velocity Gate: Aktif hanya jika jatuh ekstrem
+            if hrp.AssemblyLinearVelocity.Y < -40 then
+                local rp = RaycastParams.new(); rp.FilterType = Enum.RaycastFilterType.Exclude; rp.FilterDescendantsInstances = {char}
+                local mode = Guangling.Config.AntiVoidMode
+                local rayDir = (mode == "Light") and Vector3.new(0,-4,0) or (mode == "Smart") and (hrp.CFrame.LookVector * 1.5 + Vector3.new(0,-6,0)) or (hrp.CFrame.LookVector * 3 + Vector3.new(0,-12,0))
+                
+                local hit = workspace:Raycast(hrp.Position, rayDir, rp)
+                if hit then
+                    if hrp.AssemblyLinearVelocity.Y < 0 then hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z) end
+                    local targetY = hit.Position.Y + (hum.HipHeight > 0 and hum.HipHeight or 2) + (hrp.Size.Y / 2)
+                    if hrp.Position.Y < targetY - 0.1 then
+                        hrp.CFrame = hrp.CFrame:Lerp(hrp.CFrame + Vector3.new(0, targetY - hrp.Position.Y, 0), 0.3)
+                    end
+                end
+            end
+        end)
+    end,
+    OnDisable = function(self)
+        for _, c in ipairs(self.Connections) do c:Disconnect() end; self.Connections = {}
+        local util = Guangling.Modules["CoreUtilities"]
+        local char = LocalPlayer.Character
+        for _, part in pairs(Guangling.Cache.Parts) do
+            if part and part.Parent and char and part:IsDescendantOf(char) and part:IsA("BasePart") then
+                if util.psWorks then pcall(function() part.CollisionGroup = "Default" end) end
+                part.CanCollide = true
+            end
+        end
+    end
+})
+
+-- ==========================================
+-- 5. [MODULE] FLY ENGINE (SEAMLESS)
+-- ==========================================
+Guangling:RegisterModule("Fly", {
+    Speed = 50, Level = 1, Held = {W=false,A=false,S=false,D=false,UP=false,DOWN=false},
+    LastStopTime = 0, IdlePos = nil,
+    
+    CleanupEngine = function(self)
+        if self.BV then self.BV:Destroy(); self.BV = nil end
+        if self.BG then self.BG:Destroy(); self.BG = nil end
+    end,
+    
+    UpdatePhysicsMover = function(self, rp, hum)
+        self:CleanupEngine()
+        if Guangling.Config.FlyMode == "Modern" then
+            hum.PlatformStand = true; rp.Anchored = false; hum.AutoRotate = false
+            self.BV = Instance.new("BodyForce"); self.BV.Name = "MAG_"..tostring(math.random(10,99)); self.BV.Parent = rp
+        else
+            hum.PlatformStand = false; rp.Anchored = false; hum.AutoRotate = false
+            self.BV = Instance.new("BodyVelocity"); self.BV.Name = "MoverVel"; self.BV.Velocity = Vector3.zero; self.BV.MaxForce = Vector3.new(1e5,1e5,1e5); self.BV.Parent = rp
+            self.BG = Instance.new("BodyGyro"); self.BG.Name = "MoverGyro"; self.BG.MaxTorque = Vector3.new(1e5,1e5,1e5); self.BG.D = 50; self.BG.Parent = rp
+        end
+    end,
+    
+    OnEnable = function(self)
+        local char = LocalPlayer.Character
+        local rp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not rp or not hum then return end
+        
+        self:UpdatePhysicsMover(rp, hum)
+        
+        self.Connections.Loop = RunService.RenderStepped:Connect(function(dt)
+            local currentRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local currentHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if not currentRP or not currentHum then Guangling:ToggleModule("Fly", false); return end
+            
+            local cam = workspace.CurrentCamera
+            local spd = self.Speed * self.Level
+            local dir = Vector3.zero
+            if self.Held.W then dir += cam.CFrame.LookVector end; if self.Held.S then dir -= cam.CFrame.LookVector end
+            if self.Held.D then dir += cam.CFrame.RightVector end; if self.Held.A then dir -= cam.CFrame.RightVector end
+            if self.Held.UP then dir += Vector3.new(0,1,0) end; if self.Held.DOWN then dir -= Vector3.new(0,1,0) end
+            
+            local targetVel = dir.Magnitude > 0 and dir.Unit * spd or Vector3.zero
+            
+            if Guangling.Config.FlyMode == "Modern" then
+                currentHum.PlatformStand = true; currentRP.Anchored = false
+                if self.BV and self.BV.Parent then self.BV.Force = Vector3.new(0, workspace.Gravity * currentRP.AssemblyMass, 0) end
+                
+                if targetVel.Magnitude > 0 then
+                    self.IdlePos = nil
+                    currentRP.AssemblyLinearVelocity = targetVel
+                    currentRP.CFrame = currentRP.CFrame:Lerp(CFrame.new(currentRP.Position + (targetVel*dt), currentRP.Position + (targetVel*dt) + cam.CFrame.LookVector), 0.4)
+                else
+                    if not self.IdlePos then self.IdlePos = currentRP.Position end
+                    currentRP.AssemblyLinearVelocity = Vector3.zero; currentRP.AssemblyAngularVelocity = Vector3.zero
+                    currentRP.CFrame = currentRP.CFrame:Lerp(CFrame.new(self.IdlePos, self.IdlePos + cam.CFrame.LookVector), 0.4)
+                end
+            else
+                if self.BV and self.BV.Parent then self.BV.Velocity = targetVel + Vector3.new(0, (not self.Held.UP and not self.Held.DOWN) and 0.5 or 0, 0) end
+                if self.BG and self.BG.Parent then self.BG.CFrame = cam.CFrame end
+            end
+        end)
+    end,
+    OnDisable = function(self)
+        self.LastStopTime = tick()
+        for _, c in pairs(self.Connections) do c:Disconnect() end; self.Connections = {}
+        for k in pairs(self.Held) do self.Held[k] = false end
+        self:CleanupEngine()
+        
+        local char = LocalPlayer.Character
+        local rp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if rp then rp.Anchored = false; rp.AssemblyLinearVelocity = Vector3.zero end
+        if hum then hum.PlatformStand = false; hum.AutoRotate = true; hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
+    end
+})
+
+-- ==========================================
+-- 6. [MODULE] ESP CULLING ENGINE
+-- ==========================================
+Guangling:RegisterModule("ESP", {
+    MaxDist = 500, RayParams = RaycastParams.new(),
+    
+    RemoveESP = function(self, player)
+        local data = Guangling.Cache.Players[player]
+        if not data then return end
+        for _, c in ipairs(data.Conns) do c:Disconnect() end
+        if data.HL then data.HL:Destroy() end
+        if data.Bill then data.Bill:Destroy() end
+        Guangling.Cache.Players[player] = nil
+    end,
+    
+    AttachESP = function(self, player)
+        if player == LocalPlayer or not player.Character then return end
+        self:RemoveESP(player)
+        
+        local data = {HL = nil, Bill = nil, Txt = nil, Conns = {}, isAttaching = true, lastRay = 0, lastTxt = 0, isVis = true}
+        Guangling.Cache.Players[player] = data
+        
+        local function setup(char)
+            if not self.Enabled or char.Parent ~= workspace then data.isAttaching = false; return end
+            local hrp = char:WaitForChild("HumanoidRootPart", 3)
+            if not hrp then data.isAttaching = false; return end
+            
+            if data.HL then data.HL:Destroy() end
+            if data.Bill then data.Bill:Destroy() end
+            
+            local hl = Instance.new("Highlight")
+            hl.FillColor = Guangling.Config.ESP_Color; hl.OutlineColor = Guangling.Config.ESP_Color; hl.FillTransparency = 0.8; hl.OutlineTransparency = 0; hl.Parent = char
+            
+            local bill = Instance.new("BillboardGui")
+            bill.Size = UDim2.new(0,150,0,40); bill.StudsOffset = Vector3.new(0,3,0); bill.AlwaysOnTop = true; bill.Adornee = hrp; bill.Parent = CoreGui
+            
+            local txt = Instance.new("TextLabel")
+            txt.Size = UDim2.new(1,0,1,0); txt.BackgroundTransparency = 1; txt.TextColor3 = Guangling.Config.ESP_Color; txt.TextStrokeTransparency = 0.2; txt.Font = Enum.Font.GothamBold; txt.TextSize = 11; txt.RichText = true; txt.Parent = bill
+            
+            data.HL = hl; data.Bill = bill; data.Txt = txt; data.isAttaching = false
+        end
+        
+        task.defer(function() setup(player.Character) end)
+        table.insert(data.Conns, player.CharacterAdded:Connect(setup))
+    end,
+    
+    OnEnable = function(self)
+        self.RayParams.FilterType = Enum.RaycastFilterType.Exclude
+        for _, p in ipairs(Players:GetPlayers()) do self:AttachESP(p) end
+        
+        self.Connections.Add = Players.PlayerAdded:Connect(function(p) self:AttachESP(p) end)
+        self.Connections.Rem = Players.PlayerRemoving:Connect(function(p) self:RemoveESP(p) end)
+        
+        local valTimer, lastUpd = 0, 0
+        self.Connections.Loop = RunService.Heartbeat:Connect(function(dt)
+            local now = tick()
+            if now - lastUpd < 0.12 then return end
+            lastUpd = now
+            
+            if now - valTimer > 2 then
+                valTimer = now
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character then
+                        local d = Guangling.Cache.Players[p]
+                        if (not d or not d.HL or not d.HL.Parent) and (not d or not d.isAttaching) then self:AttachESP(p) end
+                    end
+                end
+            end
+            
+            local myRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if not myRP then return end
+            self.RayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+            
+            for p, d in pairs(Guangling.Cache.Players) do
+                if not p.Character or d.isAttaching then continue end
+                local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+                if hrp and d.HL then
+                    local dist = (hrp.Position - myRP.Position).Magnitude
+                    if dist <= self.MaxDist then
+                        local _, onScreen = workspace.CurrentCamera:WorldToViewportPoint(hrp.Position)
+                        if onScreen then
+                            if dist <= 200 then
+                                if now - d.lastRay > 0.25 then
+                                    local filter = {LocalPlayer.Character, hrp.Parent}
+                                    self.RayParams.FilterDescendantsInstances = filter
+                                    d.isVis = workspace:Raycast(myRP.Position, hrp.Position - myRP.Position, self.RayParams) == nil
+                                    d.lastRay = now
+                                end
+                            else d.isVis = false end
+                            
+                            local head = p.Character:FindFirstChild("Head")
+                            if head and head.Transparency > 0.5 then
+                                d.HL.Enabled = false
+                            else
+                                d.HL.DepthMode = (not d.isVis and 4) or (dist < 50 and 2) or 1
+                                d.HL.Enabled = true
+                            end
+                            
+                            if d.Bill and d.Txt then
+                                d.Bill.Enabled = true
+                                if now - d.lastTxt > 0.5 then
+                                    d.lastTxt = now
+                                    local eHum = p.Character:FindFirstChildOfClass("Humanoid")
+                                    local hp = eHum and math.floor(eHum.Health) or 0
+                                    local hpCol = hp > 50 and "<font color='rgb(50,255,50)'>" or "<font color='rgb(255,50,50)'>"
+                                    d.Txt.Text = string.format("%s\n<font color='rgb(200,200,200)'>[%d m]</font> | %sHP: %d</font>", p.Name, math.floor(dist), hpCol, hp)
+                                end
+                            end
+                        else
+                            d.HL.Enabled = false; if d.Bill then d.Bill.Enabled = false end
+                        end
+                    else
+                        d.HL.Enabled = false; if d.Bill then d.Bill.Enabled = false end
+                    end
+                end
+            end
+        end)
+    end,
+    OnDisable = function(self)
+        for _, c in pairs(self.Connections) do c:Disconnect() end; self.Connections = {}
+        for p in pairs(Guangling.Cache.Players) do self:RemoveESP(p) end
+    end
+})
+
+-- ==========================================
+-- 7. [MODULE] PLAYER STATE (WALKSPEED & JUMP)
+-- ==========================================
+Guangling:RegisterModule("PlayerState", {
+    OnEnable = function(self)
+        self.Enabled = true
+        self.Connections.Loop = RunService.Heartbeat:Connect(function()
+            local hum = getHumanoid()
+            if hum and hum.Health > 0 and hum.WalkSpeed ~= Guangling.Config.WalkSpeed then
+                hum.WalkSpeed = Guangling.Config.WalkSpeed
+            end
+        end)
+    end,
+    OnDisable = function(self)
+        self.Enabled = false
+        for _, c in pairs(self.Connections) do c:Disconnect() end; self.Connections = {}
+        local hum = getHumanoid()
+        if hum then hum.WalkSpeed = 16 end
+    end,
+    ToggleJump = function(self, state)
+        if state then
+            self.Connections.Jump = UIS.JumpRequest:Connect(function()
+                local hum = getHumanoid()
+                if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+            end)
+        else
+            if self.Connections.Jump then self.Connections.Jump:Disconnect(); self.Connections.Jump = nil end
+        end
+    end
+})
+
+-- ==========================================
+-- 8. [MODULE] LIGHTING (FULL BRIGHT)
+-- ==========================================
+Guangling:RegisterModule("Lighting", {
+    OnEnable = function(self)
+        local function enforce()
+            if Lighting.Brightness == 2 and Lighting.Ambient == Color3.fromRGB(255,255,255) and Lighting.FogEnd == 100000 then return end
+            Lighting.Brightness = 2; Lighting.Ambient = Color3.fromRGB(255,255,255); Lighting.OutdoorAmbient = Color3.fromRGB(255,255,255)
+            Lighting.GlobalShadows = false; Lighting.FogEnd = 100000
+        end
+        local props = {"Ambient", "OutdoorAmbient", "Brightness", "GlobalShadows", "FogEnd"}
+        for _, p in ipairs(props) do table.insert(self.Connections, Lighting:GetPropertyChangedSignal(p):Connect(enforce)) end
+        enforce()
+    end,
+    OnDisable = function(self)
+        for _, c in ipairs(self.Connections) do c:Disconnect() end; self.Connections = {}
+        RestoreLighting()
+    end
+})
+
+-- ==========================================
+-- 9. [MODULE] GUI ENGINE (MATTE BLUE BUILDER)
+-- ==========================================
+Guangling:RegisterModule("GUI", {
+    OnInit = function(self)
+        local sg = Instance.new("ScreenGui"); sg.Name = "GuanglingGUI_V20"; sg.ResetOnSpawn = false; sg.Parent = CoreGui
+        
+        -- Helper Functions
+        local function mkCorner(p, r) local c = Instance.new("UICorner", p); c.CornerRadius = UDim.new(0, r or 6); return c end
+        local function mkBtn(p, s, pos, bg, txt)
+            local b = Instance.new("TextButton", p); b.Size = s; b.Position = pos; b.BackgroundColor3 = bg; b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextColor3 = Color3.fromRGB(255,255,255); b.TextSize = 12; mkCorner(b)
+            return b
+        end
+        local function drag(obj, dragArea)
+            local act, st, ori = false, nil, nil
+            Guangling:Conn(dragArea.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then act = true; st = i.Position; ori = obj.Position end end))
+            Guangling:Conn(dragArea.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then act = false end end))
+            Guangling:Conn(UIS.InputChanged:Connect(function(i) if act and st and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then local d = i.Position - st; obj.Position = UDim2.new(ori.X.Scale, ori.X.Offset + d.X, ori.Y.Scale, ori.Y.Offset + d.Y) end end))
+        end
+
+        -- Floating Ghost Icon
+        local ghost = mkBtn(sg, UDim2.new(0,46,0,46), UDim2.new(0.5,30,0.1,0), Color3.fromRGB(30,40,55), "👻"); ghost.TextSize = 24; mkCorner(ghost, 23)
+        local gs = Instance.new("UIStroke", ghost); gs.Color = Color3.fromRGB(80,170,255); gs.Thickness = 2
+        drag(ghost, ghost)
+        Guangling:Conn(ghost.MouseButton1Click:Connect(function() Guangling:ToggleModule("Noclip") end))
+
+        -- Toggle Button
+        local tog = mkBtn(sg, UDim2.new(0,52,0,52), UDim2.new(0,14,0.5,-26), Color3.fromRGB(15,20,28), "🐉"); tog.TextSize = 28; mkCorner(tog, 13)
+        Instance.new("UIStroke", tog).Color = Color3.fromRGB(80,170,255); Instance.new("UIStroke", tog).Thickness = 2
+        drag(tog, tog)
+
+        -- Main Frame
+        local mf = Instance.new("Frame", sg); mf.Size = UDim2.new(0,250,0,310); mf.Position = UDim2.new(0.5,-125,0.08,0); mf.BackgroundColor3 = Color3.fromRGB(30,40,55); mkCorner(mf, 14)
+        local tb = Instance.new("Frame", mf); tb.Size = UDim2.new(1,0,0,40); tb.BackgroundColor3 = Color3.fromRGB(40,52,72); mkCorner(tb, 14); drag(mf, tb)
+        local tl = Instance.new("TextLabel", tb); tl.Size = UDim2.new(1,-50,1,0); tl.Position = UDim2.new(0,12,0,0); tl.BackgroundTransparency = 1; tl.Text = Guangling.Version; tl.TextColor3 = Color3.fromRGB(255,255,255); tl.Font = Enum.Font.GothamBold; tl.TextXAlignment = Enum.TextXAlignment.Left; tl.TextSize = 14
+        local minBtn = mkBtn(tb, UDim2.new(0,26,0,26), UDim2.new(1,-33,0.5,-13), Color3.fromRGB(55,75,100), "-"); minBtn.TextSize = 17
+        
+        Guangling:Conn(tog.MouseButton1Click:Connect(function() mf.Visible = not mf.Visible end))
+        Guangling:Conn(minBtn.MouseButton1Click:Connect(function() mf.Visible = false end))
+
+        -- Scroll Layout
+        local sf = Instance.new("ScrollingFrame", mf); sf.Size = UDim2.new(1,0,1,-44); sf.Position = UDim2.new(0,0,0,44); sf.BackgroundTransparency = 1; sf.ScrollBarThickness = 0
+        local ll = Instance.new("UIListLayout", sf); ll.Padding = UDim.new(0,5); ll.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        Instance.new("UIPadding", sf).PaddingTop = UDim.new(0,6)
+        ll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() sf.CanvasSize = UDim2.new(0,0,0,ll.AbsoluteContentSize.Y+12) end)
+
+        local function mkRow(txt, h)
+            local r = Instance.new("Frame", sf); r.Size = UDim2.new(0,234,0,h or 42); r.BackgroundColor3 = Color3.fromRGB(45,60,85); mkCorner(r, 9)
+            local l = Instance.new("TextLabel", r); l.Size = UDim2.new(0.55,0,1,0); l.Position = UDim2.new(0,10,0,0); l.BackgroundTransparency = 1; l.Text = txt; l.TextColor3 = Color3.fromRGB(220,235,255); l.Font = Enum.Font.Gotham; l.TextSize = 12; l.TextXAlignment = Enum.TextXAlignment.Left
+            return r, l
+        end
+
+        local function mkSwitch(r)
+            local sb = mkBtn(r, UDim2.new(0,42,0,22), UDim2.new(1,-50,0.5,-11), Color3.fromRGB(55,70,95), ""); mkCorner(sb, 11)
+            local kn = Instance.new("Frame", sb); kn.Size = UDim2.new(0,16,0,16); kn.Position = UDim2.new(0,3,0.5,-8); kn.BackgroundColor3 = Color3.fromRGB(140,165,195); mkCorner(kn, 8)
+            return sb, kn
+        end
+
+        local function setVis(sb, kn, st)
+            sb.BackgroundColor3 = st and Color3.fromRGB(80,170,255) or Color3.fromRGB(55,70,95)
+            kn.Position = st and UDim2.new(1,-19,0.5,-8) or UDim2.new(0,3,0.5,-8)
+            kn.BackgroundColor3 = st and Color3.fromRGB(255,255,255) or Color3.fromRGB(140,165,195)
+        end
+
+        -- Toggles Build
+        local ijRow = mkRow("Infinity Jump"); local ijSb, ijKn = mkSwitch(ijRow); local ijSt = false
+        Guangling:Conn(ijSb.MouseButton1Click:Connect(function() ijSt = not ijSt; setVis(ijSb, ijKn, ijSt); Guangling.Modules["PlayerState"]:ToggleJump(ijSt) end))
+
+        local ncRow, ncLbl = mkRow("Phantom Noclip [N]", 65); ncLbl.Size = UDim2.new(0.55,0,0,30)
+        local ncSb, ncKn = mkSwitch(ncRow); ncSb.Position = UDim2.new(1,-50,0,7)
+        local mdBtn = mkBtn(ncRow, UDim2.new(1,-20,0,22), UDim2.new(0,10,0,35), Color3.fromRGB(35,45,65), "Anti-Void: Smart"); mdBtn.TextSize=11
+        Guangling:Conn(mdBtn.MouseButton1Click:Connect(function()
+            local am = Guangling.Config.AntiVoidMode
+            Guangling.Config.AntiVoidMode = am == "Light" and "Smart" or am == "Smart" and "Full" or "Light"
+            mdBtn.Text = "Anti-Void: " .. Guangling.Config.AntiVoidMode
+        end))
+        
+        local function updNC()
+            local st = Guangling.Modules["Noclip"].Enabled
+            setVis(ncSb, ncKn, st)
+            ghostStroke.Color = st and Color3.fromRGB(255,215,0) or Color3.fromRGB(80,170,255)
+            ghost.Text = st and "🌟" or "👻"
+        end
+        Guangling:Conn(ncSb.MouseButton1Click:Connect(function() Guangling:ToggleModule("Noclip"); updNC() end))
+        Guangling:Conn(UIS.InputBegan:Connect(function(i, gp) if not gp and i.KeyCode == Enum.KeyCode.N then Guangling:ToggleModule("Noclip"); updNC() end end))
+
+        -- WalkSpeed
+        local wsRow, wsLbl = mkRow("WalkSpeed: 16", 60); wsLbl.Size = UDim2.new(1,-20,0,20); wsLbl.Position = UDim2.new(0,10,0,5)
+        local trk = Instance.new("Frame", wsRow); trk.Size = UDim2.new(1,-80,0,6); trk.Position = UDim2.new(0,10,0,35); trk.BackgroundColor3 = Color3.fromRGB(25,35,50); mkCorner(trk)
+        local fil = Instance.new("Frame", trk); fil.Size = UDim2.new(0,0,1,0); fil.BackgroundColor3 = Color3.fromRGB(80,170,255); mkCorner(fil)
+        local knb = mkBtn(fil, UDim2.new(0,14,0,14), UDim2.new(0,-7,0.5,-7), Color3.fromRGB(255,255,255), ""); mkCorner(knb, 7)
+        local rstBtn = mkBtn(wsRow, UDim2.new(0,50,0,22), UDim2.new(1,-60,0,27), Color3.fromRGB(180,60,60), "Reset"); rstBtn.TextSize=10
+        
+        local isDragWS = false
+        local function updWS(i)
+            local pct = math.clamp((i.Position.X - trk.AbsolutePosition.X) / trk.AbsoluteSize.X, 0, 1)
+            fil.Size = UDim2.new(pct,0,1,0); Guangling.Config.WalkSpeed = math.floor(16 + (pct * (200 - 16)))
+            wsLbl.Text = "WalkSpeed: " .. Guangling.Config.WalkSpeed
+            Guangling:ToggleModule("PlayerState", true)
+        end
+        Guangling:Conn(knb.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then isDragWS = true end end))
+        Guangling:Conn(trk.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then isDragWS = true; updWS(i) end end))
+        Guangling:Conn(UIS.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then isDragWS = false end end))
+        Guangling:Conn(UIS.InputChanged:Connect(function(i) if isDragWS and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then updWS(i) end end))
+        Guangling:Conn(rstBtn.MouseButton1Click:Connect(function() Guangling:ToggleModule("PlayerState", false); fil.Size = UDim2.new(0,0,1,0); wsLbl.Text = "WalkSpeed: 16" end))
+
+        local fbRow = mkRow("Full Bright"); local fbSb, fbKn = mkSwitch(fbRow)
+        Guangling:Conn(fbSb.MouseButton1Click:Connect(function() Guangling:ToggleModule("Lighting"); setVis(fbSb, fbKn, Guangling.Modules["Lighting"].Enabled) end))
+
+        local espRow = mkRow("ESP Highlight"); local espSb, espKn = mkSwitch(espRow)
+        Guangling:Conn(espSb.MouseButton1Click:Connect(function() Guangling:ToggleModule("ESP"); setVis(espSb, espKn, Guangling.Modules["ESP"].Enabled) end))
+
+        -- Fly GUI
+        local flyRow = mkRow("Fly")
+        local fOpn = mkBtn(flyRow, UDim2.new(0,68,0,26), UDim2.new(1,-76,0.5,-13), Color3.fromRGB(55,85,120), "Open Fly"); fOpn.TextSize=10
+        
+        local fGui = Instance.new("Frame", sg); fGui.Size = UDim2.new(0,210,0,270); fGui.Position = UDim2.new(0.5,-105,0.5,-135); fGui.BackgroundColor3 = Color3.fromRGB(30,40,55); fGui.Visible = false; mkCorner(fGui, 10); drag(fGui, fGui)
+        local egBtn = mkBtn(sg, UDim2.new(0,46,0,46), UDim2.new(0.5,-23,0.1,0), Color3.fromRGB(30,40,55), "🦅"); egBtn.TextSize=24; egBtn.Visible=false; mkCorner(egBtn, 23); drag(egBtn, egBtn)
+        Instance.new("UIStroke", egBtn).Color = Color3.fromRGB(80,170,255); Instance.new("UIStroke", egBtn).Thickness = 2
+        
+        local function flb(t, x, y, w) local l = Instance.new("TextLabel", fGui); l.Size = UDim2.new(0,w,0,40); l.Position = UDim2.new(0,x,0,y); l.BackgroundColor3 = Color3.fromRGB(50,50,50); l.Text = t; l.TextColor3 = Color3.fromRGB(255,255,255); l.Font = Enum.Font.GothamBold; l.TextSize = 11; mkCorner(l, 7); return l end
+        flb("fly "..LocalPlayer.Name, 6, 6, 92)
+        local fMin = mkBtn(fGui, UDim2.new(0,48,0,40), UDim2.new(0,102,0,6), Color3.fromRGB(55,75,100), "-")
+        local fX = mkBtn(fGui, UDim2.new(0,48,0,40), UDim2.new(0,156,0,6), Color3.fromRGB(200,60,60), "X")
+        local fMd = mkBtn(fGui, UDim2.new(0,198,0,40), UDim2.new(0,6,0,46), Color3.fromRGB(40,120,160), "Mode: Modern (CFrame Lerp)"); fMd.TextSize=11
+        
+        local fW, fA, fS, fD = mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,77,0,88), Color3.fromRGB(65,65,65), "W"), mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,10,0,134), Color3.fromRGB(65,65,65), "A"), mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,77,0,134), Color3.fromRGB(65,65,65), "S"), mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,144,0,134), Color3.fromRGB(65,65,65), "D")
+        local fUp, fDn = mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,10,0,180), Color3.fromRGB(50,90,170), "UP"), mkBtn(fGui, UDim2.new(0,56,0,40), UDim2.new(0,144,0,180), Color3.fromRGB(50,90,170), "DOWN")
+        local fMinS, fLbl, fPls = mkBtn(fGui, UDim2.new(0,38,0,40), UDim2.new(0,6,0,224), Color3.fromRGB(75,75,75), "-"), flb("1", 48, 224, 38), mkBtn(fGui, UDim2.new(0,38,0,40), UDim2.new(0,90,0,224), Color3.fromRGB(75,75,75), "+")
+        local fTog = mkBtn(fGui, UDim2.new(0,72,0,40), UDim2.new(0,132,0,224), Color3.fromRGB(50,150,50), "fly")
+
+        local flyMod = Guangling.Modules["Fly"]
+        local heldBtns = {W={b=fW,c1=Color3.fromRGB(65,65,65)}, A={b=fA,c1=Color3.fromRGB(65,65,65)}, S={b=fS,c1=Color3.fromRGB(65,65,65)}, D={b=fD,c1=Color3.fromRGB(65,65,65)}, UP={b=fUp,c1=Color3.fromRGB(50,90,170)}, DOWN={b=fDn,c1=Color3.fromRGB(50,90,170)}}
+        for k, info in pairs(heldBtns) do
+            Guangling:Conn(info.b.MouseButton1Click:Connect(function()
+                flyMod.Held[k] = not flyMod.Held[k]
+                info.b.BackgroundColor3 = flyMod.Held[k] and Color3.fromRGB(80,170,255) or info.c1
+            end))
+        end
+
+        local function updFlyUI()
+            fTog.BackgroundColor3 = flyMod.Enabled and Color3.fromRGB(200,60,60) or Color3.fromRGB(50,150,50)
+            fTog.Text = flyMod.Enabled and "stop" or "fly"
+            if not flyMod.Enabled then for k, i in pairs(heldBtns) do i.b.BackgroundColor3 = i.c1 end end
+        end
+
+        Guangling:Conn(fMd.MouseButton1Click:Connect(function()
+            Guangling.Config.FlyMode = Guangling.Config.FlyMode == "Modern" and "Legacy" or "Modern"
+            fMd.Text = Guangling.Config.FlyMode == "Modern" and "Mode: Modern (CFrame Lerp)" or "Mode: Legacy (Stealth)"
+            fMd.BackgroundColor3 = Guangling.Config.FlyMode == "Modern" and Color3.fromRGB(40,120,160) or Color3.fromRGB(160,80,40)
+            if flyMod.Enabled then flyMod:UpdatePhysicsMover(getRootPart(), getHumanoid()) end
+        end))
+        Guangling:Conn(fTog.MouseButton1Click:Connect(function() Guangling:ToggleModule("Fly"); updFlyUI() end))
+        Guangling:Conn(fMinS.MouseButton1Click:Connect(function() flyMod.Level = math.max(flyMod.Level-1,1); fLbl.Text = tostring(flyMod.Level) end))
+        Guangling:Conn(fPls.MouseButton1Click:Connect(function() flyMod.Level = math.min(flyMod.Level+1,20); fLbl.Text = tostring(flyMod.Level) end))
+        Guangling:Conn(fMin.MouseButton1Click:Connect(function() fGui.Visible = false; egBtn.Visible = true end))
+        Guangling:Conn(egBtn.MouseButton1Click:Connect(function() egBtn.Visible = false; fGui.Visible = true end))
+        Guangling:Conn(fX.MouseButton1Click:Connect(function() Guangling:ToggleModule("Fly", false); updFlyUI(); fGui.Visible = false; fOpn.Text = "Open Fly"; fOpn.BackgroundColor3 = Color3.fromRGB(55,85,120) end))
+        Guangling:Conn(fOpn.MouseButton1Click:Connect(function()
+            if fGui.Visible or egBtn.Visible then fGui.Visible = false; egBtn.Visible = false; fOpn.Text = "Open Fly"; fOpn.BackgroundColor3 = Color3.fromRGB(55,85,120)
+            else fGui.Visible = true; fOpn.Text = "Close Fly"; fOpn.BackgroundColor3 = Color3.fromRGB(220,90,90) end
+        end))
+    end
+})
+
+-- ==========================================
+-- INIT ALL MODULES
+-- ==========================================
+for name, mod in pairs(Guangling.Modules) do
+    if mod.OnInit and name ~= "CoreUtilities" and name ~= "GUI" and name ~= "AntiAFK" then mod:OnInit() end
+end
